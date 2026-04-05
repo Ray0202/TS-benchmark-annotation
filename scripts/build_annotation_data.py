@@ -448,13 +448,13 @@ def normalize_record(rec):
         mcq_list.append({"key": key, "question": question, "options": options})
     prompt_questions = extract_questions_from_prompt(raw_prompt)
     if str(rec.get("tier")) == "T3":
-        if prompt_questions:
+        # For T3, prefer source MCQ options from pack/mcq fields.
+        # Prompt-derived questions are only a fallback when source options are absent.
+        if not mcq_list and prompt_questions:
             for q in prompt_questions:
                 if not q.get("options"):
                     q["options"] = infer_options_from_question(q.get("question", ""))
             mcq_list = prompt_questions
-        else:
-            mcq_list = mcq_list
     elif not mcq_list:
         mcq_list = extract_mcq_from_prompt(raw_prompt)
 
