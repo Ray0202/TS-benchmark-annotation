@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TS Benchmark Examples</title>
+    <link rel="stylesheet" href="css/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="card" id="examples-root">
+        <div class="row between">
+          <h1>Examples</h1>
+          <a class="btn btn-linklike" href="index.html">Back Home</a>
+        </div>
+
+        <form id="examples-form" class="form-grid">
+          <label>
+            Dataset
+            <select id="examples-dataset" required>
+              <option value="">Loading...</option>
+            </select>
+          </label>
+
+          <label>
+            Tier
+            <select id="examples-tier" required>
+              <option value="T3">T3</option>
+              <option value="T4">T4</option>
+            </select>
+          </label>
+
+          <label>
+            Number of Examples
+            <input id="examples-count" type="number" min="1" value="5" required />
+          </label>
+
+          <button type="submit" class="btn btn-primary">Load Examples</button>
+        </form>
+
+        <p id="examples-message" class="message"></p>
+        <div id="examples-progress" class="progress"></div>
+
+        <div class="workbench">
+          <article id="examples-context" class="context-panel"></article>
+          <aside id="examples-answer" class="answer-panel"></aside>
+        </div>
+      </section>
+    </main>
+
+    <script src="js/examples.js" defer></script>
+  </body>
+</html>

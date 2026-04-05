@@ -1,0 +1,22 @@
+[
+  {
+    "dataset": "MIMIC",
+    "count": 40,
+    "file": "data/examples/datasets/MIMIC.json"
+  },
+  {
+    "dataset": "PSML",
+    "count": 40,
+    "file": "data/examples/datasets/PSML.json"
+  },
+  {
+    "dataset": "causal_chambers",
+    "count": 40,
+    "file": "data/examples/datasets/causal_chambers.json"
+  },
+  {
+    "dataset": "freshretailnet",
+    "count": 40,
+    "file": "data/examples/datasets/freshretailnet.json"
+  }
+]
