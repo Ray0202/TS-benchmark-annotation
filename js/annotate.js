@@ -439,6 +439,14 @@ function renderCurrent() {
   contextEl.append(meta);
 
   const eventInfo = extractEventInfo(item);
+  const historicalEvents = Array.isArray(item.historical_events) ? item.historical_events : [];
+
+  if (historicalEvents.length > 0) {
+    const histBox = document.createElement("section");
+    histBox.className = "prompt-box";
+    histBox.innerHTML = `<h3>Historical Events</h3><pre>${escapeHtml(historicalEvents.join("\n"))}</pre>`;
+    contextEl.append(histBox);
+  }
 
   if (eventInfo.lines.length > 0) {
     const eventBox = document.createElement("section");

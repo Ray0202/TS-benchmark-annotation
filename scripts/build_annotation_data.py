@@ -286,6 +286,64 @@ def enrich_t3_prompt(base_prompt, t4_prompt):
     return f"{base}\n\n{ctx}".strip()
 
 
+def extract_historical_event_lines(raw_prompt, t4_prompt):
+    hist_kw = re.compile(r"(medication|med-panel|procedure|transfer|intervention|event)", re.IGNORECASE)
+    time_kw = re.compile(r"(\d{4}-\d{2}-\d{2}[T ][0-9:\-+Z]+|at\s+\d{4}-\d{2}-\d{2})", re.IGNORECASE)
+
+    def from_text(text):
+        out = []
+        if not text:
+            return out
+        lines = [ln.rstrip() for ln in str(text).splitlines()]
+        in_history_block = False
+        for ln in lines:
+            s = ln.strip()
+            low = s.lower()
+            if not s:
+                if in_history_block:
+                    break
+                continue
+            if low.startswith("history summary") or low.startswith("historical events"):
+                in_history_block = True
+                continue
+            if in_history_block:
+                if low.startswith(
+                    (
+                        "field meanings",
+                        "task:",
+                        "questions:",
+                        "input",
+                        "output format",
+                        "constraints:",
+                        "event context",
+                        "upcoming event",
+                    )
+                ):
+                    break
+                if s.startswith("-"):
+                    is_question_line = bool(re.match(r"-\s*Q\d+[:\)]", s, flags=re.IGNORECASE))
+                    if is_question_line:
+                        continue
+                    if hist_kw.search(s) and (time_kw.search(s) or "summary:" in low):
+                        out.append(s)
+                continue
+            if s.startswith("-"):
+                has_hist_kw = bool(re.search(r"(history|historical|procedure|transfer|medication|med-panel)", low))
+                has_future_kw = bool(re.search(r"(future|upcoming|will occur soon|event context)", low))
+                is_question_line = bool(re.match(r"-\s*Q\d+[:\)]", s, flags=re.IGNORECASE))
+                if has_hist_kw and not has_future_kw and not is_question_line and (time_kw.search(s) or "summary:" in low):
+                    out.append(s)
+        return out
+
+    merged = []
+    seen = set()
+    for ln in from_text(raw_prompt) + from_text(t4_prompt):
+        if ln not in seen:
+            seen.add(ln)
+            merged.append(ln)
+    return merged
+
+
 def build_mcq_dict_from_task(task_obj):
     mcq_dict = {}
     pack = task_obj.get("pack")
@@ -474,6 +532,7 @@ def normalize_record(rec):
     cleaned_prompt = remove_question_block(cleaned_prompt)
     if str(rec.get("tier")) == "T3":
         cleaned_prompt = enrich_t3_prompt(cleaned_prompt, rec.get("t4_prompt", ""))
+    historical_events = extract_historical_event_lines(raw_prompt, rec.get("t4_prompt", ""))
     inferred_payload = parse_json_blob(input_part)
     inferred_history, inferred_cov, inferred_future_cov = infer_series_from_payload(
         inferred_payload, (rec.get("meta") or {}).get("target")
@@ -546,6 +605,7 @@ def normalize_record(rec):
             "covariates": {}
         },
         "reference_answers": rec.get("reference_answers") or {},
+        "historical_events": historical_events,
     }
     return normalized
 
