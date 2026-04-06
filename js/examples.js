@@ -360,10 +360,13 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd", op
   const low = minY - yPad;
   const high = maxY + yPad;
 
-  const left = 44;
+  const freshTickMode =
+    useNumericAxis && Number.isFinite(opts && opts.dayStartMinute) && Number.isFinite(opts && opts.dayEndMinute);
+
+  const left = freshTickMode ? 56 : 44;
   const right = width - 12;
   const top = 10;
-  const bottom = height - 34;
+  const bottom = height - (freshTickMode ? 64 : 34);
 
   ctx.strokeStyle = "#64748b";
   ctx.lineWidth = 1.2;
@@ -375,7 +378,7 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd", op
 
   ctx.fillStyle = "#334155";
   ctx.font = "11px sans-serif";
-  ctx.fillText(String(Number(minY.toFixed(3))), 2, bottom + 2);
+  ctx.fillText(String(Number(minY.toFixed(3))), 2, bottom - 4);
   ctx.fillText(String(Number(maxY.toFixed(3))), 2, top + 10);
 
   const hasDomain =
@@ -408,53 +411,69 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd", op
   });
   ctx.stroke();
 
-  const tickPositions = [];
-  if (useNumericAxis && Number.isFinite(opts && opts.dayStartMinute)) {
+  const tickSpecs = [];
+
+  if (freshTickMode) {
     const dayStartMinute = Number(opts.dayStartMinute);
-    const firstIdx = Math.ceil((minX - dayStartMinute) / 1440);
-    const lastIdx = Math.floor((maxX - dayStartMinute) / 1440);
-    for (let k = firstIdx; k <= lastIdx; k += 1) {
-      tickPositions.push(dayStartMinute + k * 1440);
-    }
-    if (tickPositions.length > 8) {
-      const sampled = [tickPositions[0], tickPositions[1]];
-      const remain = tickPositions.slice(2);
-      for (let i = 0; i < 6; i += 1) {
-        const idx = Math.floor((i * (remain.length - 1)) / Math.max(6 - 1, 1));
-        sampled.push(remain[idx]);
-      }
-      tickPositions.length = 0;
-      tickPositions.push(...Array.from(new Set(sampled)));
+    const dayEndMinute = Number(opts.dayEndMinute);
+    const noonMinute = 12 * 60;
+    const firstDay = Math.max(0, Math.floor((minX - dayStartMinute) / 1440));
+    const lastDay = Math.max(firstDay, Math.ceil((maxX - dayStartMinute) / 1440));
+
+    for (let d = firstDay; d <= lastDay; d += 1) {
+      const base = d * 1440;
+      const tStart = base + dayStartMinute;
+      const tNoon = base + noonMinute;
+      const tEnd = base + dayEndMinute;
+
+      if (tStart >= minX && tStart <= maxX) tickSpecs.push({ t: tStart, label: "06:00", isFresh: true, showLabel: true });
+      if (tNoon >= minX && tNoon <= maxX) tickSpecs.push({ t: tNoon, label: "", isFresh: true, showLabel: false });
+      if (tEnd >= minX && tEnd <= maxX) tickSpecs.push({ t: tEnd, label: "22:00", isFresh: true, showLabel: true });
     }
   }
-  if (tickPositions.length === 0) {
+  if (tickSpecs.length === 0) {
     const tickCount = 5;
     for (let i = 0; i < tickCount; i += 1) {
-      tickPositions.push(minX + ((maxX - minX) * i) / Math.max(tickCount - 1, 1));
+      const t = minX + ((maxX - minX) * i) / Math.max(tickCount - 1, 1);
+      let label = "";
+      if (useDateAxis) {
+        label = formatTimestampLabel(new Date(t).toISOString(), true);
+      } else if (useNumericAxis) {
+        label = formatTimestampLabel(t, true);
+      } else {
+        label = String(Math.round(t));
+      }
+      tickSpecs.push({ t, label, isFresh: false });
     }
   }
-  for (const t of tickPositions) {
-    const x = xScale(t);
-    let label = "";
-    if (useDateAxis) {
-      label = formatTimestampLabel(new Date(t).toISOString(), true);
-    } else if (useNumericAxis) {
-      label = formatTimestampLabel(t, true);
-    } else {
-      label = String(Math.round(t));
-    }
+  for (const spec of tickSpecs) {
+    const x = xScale(spec.t);
+    const label = spec.label || "";
 
     ctx.strokeStyle = "#94a3b8";
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(x, bottom);
-    ctx.lineTo(x, bottom + 4);
+    ctx.lineTo(x, bottom + (spec.isFresh ? 5 : 4));
     ctx.stroke();
 
     ctx.fillStyle = "#334155";
-    ctx.font = "10px sans-serif";
-    const w = ctx.measureText(label).width;
-    ctx.fillText(label, Math.max(left, Math.min(right - w, x - w / 2)), bottom + 15);
+    if (spec.isFresh) {
+      if (spec.showLabel) {
+        ctx.font = "7px sans-serif";
+        ctx.save();
+        ctx.translate(x, bottom + 30);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, 0, 0);
+        ctx.restore();
+      }
+    } else {
+      ctx.font = "10px sans-serif";
+      const w = ctx.measureText(label).width;
+      ctx.fillText(label, Math.max(left, Math.min(right - w, x - w / 2)), bottom + 15);
+    }
   }
 
   const showEventMarker = opts.showEventMarker !== false;
@@ -597,6 +616,7 @@ function renderCurrent() {
     {
       xDomain: mainDomain,
       dayStartMinute: String(item.source_dataset || "") === "freshretailnet" ? 6 * 60 : undefined,
+    dayEndMinute: String(item.source_dataset || "") === "freshretailnet" ? 22 * 60 : undefined,
     }
   );
   chartGrid.append(histBlock);
@@ -632,6 +652,7 @@ function renderCurrent() {
         showEventMarker: false,
         xDomain: mainDomain,
         dayStartMinute: String(item.source_dataset || "") === "freshretailnet" ? 6 * 60 : undefined,
+    dayEndMinute: String(item.source_dataset || "") === "freshretailnet" ? 22 * 60 : undefined,
       });
       covDetails.append(covBlock);
     }
