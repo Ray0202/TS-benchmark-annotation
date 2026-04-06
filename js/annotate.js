@@ -640,6 +640,33 @@ function triggerDownload(filename, text, mimeType) {
   URL.revokeObjectURL(url);
 }
 
+function sanitizeFilenamePart(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "unknown";
+  const cleaned = raw
+    .replace(/\s+/g, "_")
+    .replace(/[^\p{L}\p{N}_-]+/gu, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return cleaned || "unknown";
+}
+
+function buildDownloadFilename(stage, ext) {
+  const annotator = sanitizeFilenamePart(config.annotatorName);
+  const dataset = sanitizeFilenamePart(config.dataset);
+  const tiers = Array.isArray(config.selectedTiers)
+    ? config.selectedTiers.filter((t) => t === "T3" || t === "T4")
+    : [];
+  const tierPart = sanitizeFilenamePart(tiers.length > 0 ? tiers.join("-") : "NA");
+  const startIndex = Math.max(1, Math.floor(Number(config.startIndex || 1)));
+  const itemCount = Math.max(
+    1,
+    Math.floor(Number(state.selectedItems.length || config.annotationCount || config.requestedCount || 1))
+  );
+  const stagePart = sanitizeFilenamePart(stage || "annotations");
+  return `${annotator}_${dataset}_${tierPart}_start${startIndex}_n${itemCount}_${stagePart}.${ext}`;
+}
+
 function buildCsv(payload) {
   const rows = [
     ["annotator", "dataset", "item_id", "tier", "question_key", "answer", "time_spent_sec", "submitted_at"],
@@ -757,7 +784,7 @@ function renderHeader() {
   downloadJsonBtn.textContent = "Download Progress JSON";
   downloadJsonBtn.onclick = () => {
     const payload = buildPayload(true);
-    const filename = `${config.annotatorName}_${config.dataset}_progress.json`;
+    const filename = buildDownloadFilename("progress", "json");
     triggerDownload(filename, JSON.stringify(payload, null, 2), "application/json");
   };
 
@@ -767,7 +794,7 @@ function renderHeader() {
   downloadCsvBtn.textContent = "Download Progress CSV";
   downloadCsvBtn.onclick = () => {
     const payload = buildPayload(true);
-    const filename = `${config.annotatorName}_${config.dataset}_progress.csv`;
+    const filename = buildDownloadFilename("progress", "csv");
     triggerDownload(filename, buildCsv(payload), "text/csv");
   };
 
@@ -777,7 +804,7 @@ function renderHeader() {
   saveExitBtn.textContent = "Save & Exit";
   saveExitBtn.onclick = () => {
     const payload = buildPayload(true);
-    const filename = `${config.annotatorName}_${config.dataset}_progress.json`;
+    const filename = buildDownloadFilename("progress", "json");
     triggerDownload(filename, JSON.stringify(payload, null, 2), "application/json");
     sessionStorage.removeItem("annotationConfig");
     window.location.href = "index.html";
@@ -842,7 +869,7 @@ function renderFinish() {
   downloadJsonBtn.className = "btn btn-primary";
   downloadJsonBtn.textContent = "Download JSON";
   downloadJsonBtn.onclick = () => {
-    const filename = `${config.annotatorName}_${config.dataset}_annotations.json`;
+    const filename = buildDownloadFilename("annotations", "json");
     triggerDownload(filename, JSON.stringify(payload, null, 2), "application/json");
   };
 
@@ -850,7 +877,7 @@ function renderFinish() {
   downloadCsvBtn.className = "btn";
   downloadCsvBtn.textContent = "Download CSV";
   downloadCsvBtn.onclick = () => {
-    const filename = `${config.annotatorName}_${config.dataset}_annotations.csv`;
+    const filename = buildDownloadFilename("annotations", "csv");
     triggerDownload(filename, buildCsv(payload), "text/csv");
   };
 
