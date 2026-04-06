@@ -43,6 +43,7 @@ def load_task_modified_records(paths):
                     "mcq": build_mcq_dict_from_task(task_obj),
                     "input": task_obj.get("input"),
                     "t4_prompt": (tasks.get("T4") or {}).get("prompt", "") if isinstance(tasks.get("T4"), dict) else "",
+                    "reference_answers": build_reference_answers(task_obj),
                 }
                 records.append(rec)
     return records

@@ -362,11 +362,12 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd", op
 
   const freshTickMode =
     useNumericAxis && Number.isFinite(opts && opts.dayStartMinute) && Number.isFinite(opts && opts.dayEndMinute);
+  const psmlMidnightMode = useDateAxis && Boolean(opts && opts.psmlMidnightTicks);
 
   const left = freshTickMode ? 56 : 44;
   const right = width - 12;
   const top = 10;
-  const bottom = height - (freshTickMode ? 64 : 34);
+  const bottom = height - (freshTickMode || psmlMidnightMode ? 64 : 34);
 
   ctx.strokeStyle = "#64748b";
   ctx.lineWidth = 1.2;
@@ -413,6 +414,17 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd", op
 
   const tickSpecs = [];
 
+  if (psmlMidnightMode) {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const startDate = new Date(minX);
+    startDate.setHours(0, 0, 0, 0);
+    let t = startDate.getTime();
+    if (t < minX) t += dayMs;
+    for (; t <= maxX; t += dayMs) {
+      tickSpecs.push({ t, label: "00:00", isPsmlMidnight: true, showLabel: true });
+    }
+  }
+
   if (freshTickMode) {
     const dayStartMinute = Number(opts.dayStartMinute);
     const dayEndMinute = Number(opts.dayEndMinute);
@@ -454,11 +466,22 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd", op
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(x, bottom);
-    ctx.lineTo(x, bottom + (spec.isFresh ? 5 : 4));
+    ctx.lineTo(x, bottom + (spec.isFresh || spec.isPsmlMidnight ? 5 : 4));
     ctx.stroke();
 
     ctx.fillStyle = "#334155";
     if (spec.isFresh) {
+      if (spec.showLabel) {
+        ctx.font = "7px sans-serif";
+        ctx.save();
+        ctx.translate(x, bottom + 30);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, 0, 0);
+        ctx.restore();
+      }
+    } else if (spec.isPsmlMidnight) {
       if (spec.showLabel) {
         ctx.font = "7px sans-serif";
         ctx.save();
@@ -617,13 +640,19 @@ function renderCurrent() {
       xDomain: mainDomain,
       dayStartMinute: String(item.source_dataset || "") === "freshretailnet" ? 6 * 60 : undefined,
     dayEndMinute: String(item.source_dataset || "") === "freshretailnet" ? 22 * 60 : undefined,
+      psmlMidnightTicks: String(item.source_dataset || "") === "PSML",
     }
   );
   chartGrid.append(histBlock);
 
   const covTimestamps = buildDisplayTimestamps(item, (item.history_covariates || {}).timestamps || []);
   const covariates = ((item.history_covariates || {}).covariates) || {};
-  const covNames = Object.keys(covariates);
+  const covNames = Object.keys(covariates).sort((a, b) => {
+    const aTimePos = String(a).toLowerCase() === "time_position_in_day";
+    const bTimePos = String(b).toLowerCase() === "time_position_in_day";
+    if (aTimePos === bTimePos) return 0;
+    return aTimePos ? 1 : -1;
+  });
   if (covNames.length > 0) {
     const covDetails = document.createElement("details");
     covDetails.className = "chart-block";
@@ -653,6 +682,7 @@ function renderCurrent() {
         xDomain: mainDomain,
         dayStartMinute: String(item.source_dataset || "") === "freshretailnet" ? 6 * 60 : undefined,
     dayEndMinute: String(item.source_dataset || "") === "freshretailnet" ? 22 * 60 : undefined,
+        psmlMidnightTicks: String(item.source_dataset || "") === "PSML",
       });
       covDetails.append(covBlock);
     }
