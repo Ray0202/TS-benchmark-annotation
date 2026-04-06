@@ -358,6 +358,36 @@ def build_mcq_dict_from_task(task_obj):
             opts = [str(x).strip() for x in opts if str(x).strip()]
             if q and opts:
                 mcq_dict[f"q{i}"] = {"question": q, "options": opts}
+
+    if mcq_dict:
+        return mcq_dict
+
+    mcq = task_obj.get("mcq")
+    if isinstance(mcq, dict) and mcq:
+        i = 1
+        for _, item in mcq.items():
+            if not isinstance(item, dict):
+                i += 1
+                continue
+            q = item.get("question")
+            opts = item.get("label_space") or item.get("options") or []
+            if not isinstance(opts, list):
+                opts = []
+            opts = [str(x).strip() for x in opts if str(x).strip()]
+            if q and opts:
+                mcq_dict[f"q{i}"] = {"question": q, "options": opts}
+            i += 1
+    elif isinstance(mcq, list) and mcq:
+        for i, item in enumerate(mcq, start=1):
+            if not isinstance(item, dict):
+                continue
+            q = item.get("question")
+            opts = item.get("label_space") or item.get("options") or []
+            if not isinstance(opts, list):
+                opts = []
+            opts = [str(x).strip() for x in opts if str(x).strip()]
+            if q and opts:
+                mcq_dict[f"q{i}"] = {"question": q, "options": opts}
     return mcq_dict
 
 

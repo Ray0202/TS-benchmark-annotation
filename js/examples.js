@@ -12,6 +12,7 @@ const state = {
   items: [],
   index: 0,
 };
+const MAX_PLOT_POINTS = 180;
 
 function escapeHtml(s) {
   return String(s)
@@ -21,8 +22,29 @@ function escapeHtml(s) {
 }
 
 function toMillis(ts) {
+  if (typeof ts !== "string") return null;
   const t = Date.parse(ts);
   return Number.isFinite(t) ? t : null;
+}
+
+function parseEventTimestampFromPrompt(promptText) {
+  const m = String(promptText || "").match(/\d{4}-\d{2}-\d{2}[T ][0-9:\-+Z]+/);
+  if (!m) return null;
+  const s = m[0].replace(" ", "T");
+  return toMillis(s);
+}
+
+function parsePsmlStartMs(sampleId) {
+  const raw = String(sampleId || "");
+  const m = raw.match(/:(\d{10})->(\d{10})$/);
+  if (!m) return null;
+  const start = m[1];
+  const y = Number(start.slice(0, 4));
+  const mo = Number(start.slice(4, 6));
+  const d = Number(start.slice(6, 8));
+  const h = Number(start.slice(8, 10));
+  if (![y, mo, d, h].every((x) => Number.isFinite(x))) return null;
+  return Date.UTC(y, mo - 1, d, h, 0, 0);
 }
 
 function getBaseDateFromItem(item) {
@@ -36,6 +58,39 @@ function getBaseDateFromItem(item) {
   return { y, mon, d };
 }
 
+function isMinuteOfDaySeries(ts) {
+  if (!Array.isArray(ts) || ts.length < 2) return false;
+  return ts.every((v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1439);
+}
+
+function unwrapMinuteOfDay(ts) {
+  const out = [];
+  let dayOffset = 0;
+  let prev = null;
+  for (const v of ts) {
+    const minute = Number(v);
+    if (prev !== null && minute < prev - 720) dayOffset += 1;
+    out.push(minute + dayOffset * 1440);
+    prev = minute;
+  }
+  return out;
+}
+
+function inferMinuteStep(ts) {
+  const deltas = [];
+  for (let i = 1; i < ts.length; i += 1) {
+    const prev = Number(ts[i - 1]);
+    const curr = Number(ts[i]);
+    if (!Number.isFinite(prev) || !Number.isFinite(curr)) continue;
+    let d = curr - prev;
+    if (d <= 0) d += 1440;
+    if (d > 0 && d <= 720) deltas.push(d);
+  }
+  if (deltas.length === 0) return 60;
+  const sorted = [...deltas].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] || 60;
+}
+
 function buildDisplayTimestamps(item, timestamps) {
   const ts = Array.isArray(timestamps) ? timestamps : [];
   if (ts.length === 0) return ts;
@@ -45,34 +100,110 @@ function buildDisplayTimestamps(item, timestamps) {
   }
 
   const ds = String((item && item.source_dataset) || "");
-  const allNumeric = ts.every((v) => typeof v === "number" && Number.isFinite(v));
-  if (ds !== "MIMIC" || !allNumeric) {
-    return ts;
-  }
-
-  const base = getBaseDateFromItem(item);
-  if (!base) return ts;
-
-  const out = [];
-  let dayOffset = 0;
-  let prevMin = null;
-  for (const v of ts) {
-    const minute = Math.round(v);
-    if (prevMin !== null && minute < prevMin - 720) {
-      dayOffset += 1;
+  if (ds === "freshretailnet" && ts.every((v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1)) {
+    const out = [];
+    let day = 0;
+    let prev = null;
+    let prevOut = null;
+    const dayStartMinute = 6 * 60;
+    const dayEndMinute = 22 * 60;
+    const activeSpanMinute = dayEndMinute - dayStartMinute;
+    for (const v of ts) {
+      const curr = Number(v);
+      if (prev !== null && curr < prev - 0.5) day += 1;
+      // Freshretailnet slots represent the active retail window (06:00-22:00).
+      let minuteInDay = Math.round(dayStartMinute + curr * activeSpanMinute);
+      if (minuteInDay > dayEndMinute) minuteInDay = dayEndMinute;
+      let absMinute = day * 1440 + minuteInDay;
+      if (prevOut !== null && absMinute <= prevOut) absMinute = prevOut + 1;
+      out.push(absMinute);
+      prev = curr;
+      prevOut = absMinute;
     }
-    prevMin = minute;
-    const dt = new Date(Date.UTC(base.y, base.mon - 1, base.d, 0, 0, 0));
-    dt.setUTCDate(dt.getUTCDate() + dayOffset);
-    dt.setUTCMinutes(dt.getUTCMinutes() + minute);
-    out.push(dt.toISOString());
+    return out;
   }
-  return out;
+
+  if (ds === "PSML" && ts.every((v) => typeof v === "number" && Number.isFinite(v))) {
+    const startMs = parsePsmlStartMs(item && (item.sample_id || item.id));
+    if (Number.isFinite(startMs)) {
+      const out = [];
+      let dayOffsetHours = 0;
+      let prevHour = null;
+      for (let i = 0; i < ts.length; i += 1) {
+        const idx = Number(ts[i]);
+        const currHour = Number.isFinite(idx) ? idx : i;
+        if (prevHour !== null && currHour < prevHour - 12) {
+          dayOffsetHours += 24;
+        }
+        const hourOffset = currHour + dayOffsetHours;
+        out.push(new Date(startMs + hourOffset * 3600 * 1000).toISOString());
+        prevHour = currHour;
+      }
+      return out;
+    }
+  }
+
+  if (ds === "MIMIC" && isMinuteOfDaySeries(ts)) {
+    const stepMin = inferMinuteStep(ts);
+    const base = getBaseDateFromItem(item);
+    let endMs = base ? Date.UTC(base.y, base.mon - 1, base.d, 0, 0, 0) : Date.now();
+    const eventMs = parseEventTimestampFromPrompt(item && item.prompt);
+    if (String(item && item.tier) === "T4" && Number.isFinite(eventMs)) {
+      endMs = eventMs - stepMin * 60 * 1000;
+    }
+    const n = ts.length;
+    const out = [];
+    for (let i = 0; i < n; i += 1) {
+      const t = endMs - (n - 1 - i) * stepMin * 60 * 1000;
+      out.push(new Date(t).toISOString());
+    }
+    return out;
+  }
+
+  if (isMinuteOfDaySeries(ts)) {
+    return unwrapMinuteOfDay(ts);
+  }
+  return ts;
+}
+
+function normalizeSeriesLength(values, timestamps, maxPoints = MAX_PLOT_POINTS) {
+  const vals = Array.isArray(values) ? values : [];
+  const ts = Array.isArray(timestamps) ? timestamps : [];
+  const n = vals.length;
+  if (n === 0) return { values: [], timestamps: [] };
+  if (n <= maxPoints) return { values: vals, timestamps: ts };
+
+  const outVals = [];
+  const outTs = [];
+  for (let i = 0; i < maxPoints; i += 1) {
+    const idx = Math.floor((i * (n - 1)) / Math.max(maxPoints - 1, 1));
+    outVals.push(vals[idx]);
+    if (ts.length === n) outTs.push(ts[idx]);
+  }
+
+  if (ts.length === n) return { values: outVals, timestamps: outTs };
+  if (ts.length > 0) {
+    const outTs2 = [];
+    for (let i = 0; i < maxPoints; i += 1) {
+      const idx = Math.floor((i * (ts.length - 1)) / Math.max(maxPoints - 1, 1));
+      outTs2.push(ts[idx]);
+    }
+    return { values: outVals, timestamps: outTs2 };
+  }
+  return { values: outVals, timestamps: [] };
 }
 
 function formatTimestampLabel(v, withDate = false) {
   if (v === null || v === undefined) return "";
   if (typeof v === "number" && Number.isFinite(v)) {
+    if (withDate && v >= 0) {
+      const total = Math.round(v);
+      const day = Math.floor(total / 1440) + 1;
+      const rem = ((total % 1440) + 1440) % 1440;
+      const hh = Math.floor(rem / 60);
+      const mm = rem % 60;
+      return `Day ${day} ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+    }
     if (v >= 0 && v <= 23 && Number.isInteger(v)) return `${String(v).padStart(2, "0")}:00`;
     if (v >= 0 && v < 1440) {
       const total = Math.round(v);
@@ -93,6 +224,45 @@ function formatTimestampLabel(v, withDate = false) {
     return `${mon}-${day} ${hh}:${mm}`;
   }
   return String(v).slice(0, 12);
+}
+
+function isStrictlyIncreasing(arr) {
+  for (let i = 1; i < arr.length; i += 1) {
+    if (!(arr[i] > arr[i - 1])) return false;
+  }
+  return arr.length >= 2;
+}
+
+function deriveAxisInfo(values, timestamps) {
+  const vals = Array.isArray(values) ? values : [];
+  const ts = Array.isArray(timestamps) ? timestamps : [];
+  const dateTs = ts.map((t) => toMillis(t));
+  const hasDateAxis = dateTs.filter((x) => x !== null).length >= 2;
+  const hasNumericAxis = !hasDateAxis && ts.length >= 2 && ts.every((t) => typeof t === "number" && Number.isFinite(t));
+
+  const validDateTs = dateTs.filter((x) => x !== null);
+  const useDateAxis = hasDateAxis && isStrictlyIncreasing(validDateTs);
+  const numericTs = hasNumericAxis ? ts.map((t) => Number(t)) : [];
+  const useNumericAxis = hasNumericAxis && isStrictlyIncreasing(numericTs);
+
+  const xRaw = vals.map((_, i) => {
+    if (useDateAxis) return dateTs[i];
+    if (useNumericAxis) return Number.isFinite(Number(ts[i])) ? Number(ts[i]) : NaN;
+    return i;
+  });
+
+  const clean = vals
+    .map((v, i) => ({ x: xRaw[i], y: typeof v === "number" ? v : NaN }))
+    .filter((p) => Number.isFinite(p.y) && Number.isFinite(p.x));
+
+  if (clean.length < 2) return { useDateAxis, useNumericAxis, clean, minX: null, maxX: null };
+  return {
+    useDateAxis,
+    useNumericAxis,
+    clean,
+    minX: Math.min(...clean.map((p) => p.x)),
+    maxX: Math.max(...clean.map((p) => p.x)),
+  };
 }
 
 function extractEventInfo(item) {
@@ -162,7 +332,7 @@ function renderPromptWithHighlights(item, eventInfo) {
   return out.join("\n");
 }
 
-function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd") {
+function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd", opts = {}) {
   const parentWidth = canvas.parentElement ? canvas.parentElement.clientWidth : 0;
   const width = Math.max(canvas.clientWidth, parentWidth - 8, 480);
   const height = Math.max(canvas.clientHeight, 170);
@@ -172,9 +342,10 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd") {
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, width, height);
 
-  const clean = (values || [])
-    .map((v, i) => ({ x: i, y: typeof v === "number" ? v : NaN }))
-    .filter((p) => Number.isFinite(p.y));
+  const axis = deriveAxisInfo(values, timestamps);
+  const useDateAxis = axis.useDateAxis;
+  const useNumericAxis = axis.useNumericAxis;
+  const clean = axis.clean.map((p, i) => ({ ...p, i }));
 
   if (clean.length < 2) {
     ctx.fillStyle = "#8da2b5";
@@ -207,27 +378,71 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd") {
   ctx.fillText(String(Number(minY.toFixed(3))), 2, bottom + 2);
   ctx.fillText(String(Number(maxY.toFixed(3))), 2, top + 10);
 
-  const xScale = (x) => left + ((right - left) * x) / Math.max((values || []).length - 1, 1);
+  const hasDomain =
+    opts &&
+    opts.xDomain &&
+    Number.isFinite(opts.xDomain.min) &&
+    Number.isFinite(opts.xDomain.max) &&
+    opts.xDomain.max > opts.xDomain.min;
+  const minX = hasDomain ? opts.xDomain.min : axis.minX;
+  const maxX = hasDomain ? opts.xDomain.max : axis.maxX;
+  const xScale = (x) => left + ((right - left) * (x - minX)) / Math.max(maxX - minX, 1e-9);
   const yScale = (y) => bottom - ((bottom - top) * (y - low)) / (high - low);
 
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.4;
   ctx.beginPath();
+  const breakOnReset = Boolean(opts.breakOnReset);
+  const resetDrop = Number.isFinite(opts.resetDropThreshold) ? opts.resetDropThreshold : 360;
   clean.forEach((point, idx) => {
     const px = xScale(point.x);
     const py = yScale(point.y);
-    if (idx === 0) ctx.moveTo(px, py);
+    if (idx === 0) {
+      ctx.moveTo(px, py);
+      return;
+    }
+    const prev = clean[idx - 1];
+    const isReset = breakOnReset && Number.isFinite(prev.y) && Number.isFinite(point.y) && prev.y - point.y > resetDrop;
+    if (isReset) ctx.moveTo(px, py);
     else ctx.lineTo(px, py);
   });
   ctx.stroke();
 
-  const tickCount = 5;
-  const useDate = Array.isArray(timestamps) && timestamps.some((t) => toMillis(t) !== null);
-  for (let i = 0; i < tickCount; i += 1) {
-    const idx = Math.round((i * ((values || []).length - 1)) / Math.max(tickCount - 1, 1));
-    const x = xScale(idx);
-    const raw = Array.isArray(timestamps) && timestamps.length > idx ? timestamps[idx] : idx;
-    const label = formatTimestampLabel(raw, useDate);
+  const tickPositions = [];
+  if (useNumericAxis && Number.isFinite(opts && opts.dayStartMinute)) {
+    const dayStartMinute = Number(opts.dayStartMinute);
+    const firstIdx = Math.ceil((minX - dayStartMinute) / 1440);
+    const lastIdx = Math.floor((maxX - dayStartMinute) / 1440);
+    for (let k = firstIdx; k <= lastIdx; k += 1) {
+      tickPositions.push(dayStartMinute + k * 1440);
+    }
+    if (tickPositions.length > 8) {
+      const sampled = [tickPositions[0], tickPositions[1]];
+      const remain = tickPositions.slice(2);
+      for (let i = 0; i < 6; i += 1) {
+        const idx = Math.floor((i * (remain.length - 1)) / Math.max(6 - 1, 1));
+        sampled.push(remain[idx]);
+      }
+      tickPositions.length = 0;
+      tickPositions.push(...Array.from(new Set(sampled)));
+    }
+  }
+  if (tickPositions.length === 0) {
+    const tickCount = 5;
+    for (let i = 0; i < tickCount; i += 1) {
+      tickPositions.push(minX + ((maxX - minX) * i) / Math.max(tickCount - 1, 1));
+    }
+  }
+  for (const t of tickPositions) {
+    const x = xScale(t);
+    let label = "";
+    if (useDateAxis) {
+      label = formatTimestampLabel(new Date(t).toISOString(), true);
+    } else if (useNumericAxis) {
+      label = formatTimestampLabel(t, true);
+    } else {
+      label = String(Math.round(t));
+    }
 
     ctx.strokeStyle = "#94a3b8";
     ctx.lineWidth = 1;
@@ -242,12 +457,15 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd") {
     ctx.fillText(label, Math.max(left, Math.min(right - w, x - w / 2)), bottom + 15);
   }
 
+  const showEventMarker = opts.showEventMarker !== false;
+  if (!showEventMarker) return;
+
   const eventTs = eventInfo.timestampText ? toMillis(eventInfo.timestampText) : null;
   let markerX = null;
   let isFuture = false;
   let label = null;
 
-  if (eventTs && Array.isArray(timestamps) && timestamps.length > 0) {
+  if (eventTs && useDateAxis && Array.isArray(timestamps) && timestamps.length > 0) {
     const tsMillis = timestamps.map((t) => toMillis(t));
     const validTs = tsMillis.filter((x) => x !== null);
     if (validTs.length >= 2) {
@@ -300,11 +518,11 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd") {
   }
 }
 
-function mountSeriesCanvas(container, values, timestamps, eventInfo, color = "#0f6cbd") {
+function mountSeriesCanvas(container, values, timestamps, eventInfo, color = "#0f6cbd", opts = {}) {
   const canvas = document.createElement("canvas");
   canvas.className = "ts-chart";
   container.append(canvas);
-  requestAnimationFrame(() => drawSeries(canvas, values || [], timestamps || [], eventInfo, color));
+  requestAnimationFrame(() => drawSeries(canvas, values || [], timestamps || [], eventInfo, color, opts));
 }
 
 function shuffle(array) {
@@ -361,11 +579,25 @@ function renderCurrent() {
   const histBlock = document.createElement("div");
   histBlock.className = "chart-block";
   histBlock.innerHTML = `<h4>Historical Series (${(item.history || {}).key || "target"})</h4>`;
+  const histPrepared = normalizeSeriesLength(
+    (item.history || {}).values || [],
+    buildDisplayTimestamps(item, (item.history || {}).timestamps || [])
+  );
+  const mainAxis = deriveAxisInfo(histPrepared.values, histPrepared.timestamps);
+  const mainDomain =
+    Number.isFinite(mainAxis.minX) && Number.isFinite(mainAxis.maxX) && mainAxis.maxX > mainAxis.minX
+      ? { min: mainAxis.minX, max: mainAxis.maxX }
+      : null;
   mountSeriesCanvas(
     histBlock,
-    (item.history || {}).values || [],
-    buildDisplayTimestamps(item, (item.history || {}).timestamps || []),
-    eventInfo
+    histPrepared.values,
+    histPrepared.timestamps,
+    eventInfo,
+    "#0f6cbd",
+    {
+      xDomain: mainDomain,
+      dayStartMinute: String(item.source_dataset || "") === "freshretailnet" ? 6 * 60 : undefined,
+    }
   );
   chartGrid.append(histBlock);
 
@@ -383,13 +615,24 @@ function renderCurrent() {
       const covBlock = document.createElement("div");
       covBlock.className = "chart-block";
       covBlock.innerHTML = `<h4>Covariate: ${covName}</h4>`;
-      mountSeriesCanvas(
-        covBlock,
-        covariates[covName] || [],
-        covTimestamps,
-        eventInfo,
-        "#b55300"
-      );
+      const covPrepared = normalizeSeriesLength(covariates[covName] || [], covTimestamps);
+      const covAxis = deriveAxisInfo(covPrepared.values, covPrepared.timestamps);
+      if (covAxis.clean.length < 2) {
+        const note = document.createElement("p");
+        note.className = "muted";
+        note.textContent = "Skipped: too few valid points for plotting.";
+        covBlock.append(note);
+        covDetails.append(covBlock);
+        continue;
+      }
+      const isTimePos = String(covName).toLowerCase().includes("time_position_in_day");
+      mountSeriesCanvas(covBlock, covPrepared.values, covPrepared.timestamps, eventInfo, "#b55300", {
+        breakOnReset: isTimePos,
+        resetDropThreshold: 300,
+        showEventMarker: false,
+        xDomain: mainDomain,
+        dayStartMinute: String(item.source_dataset || "") === "freshretailnet" ? 6 * 60 : undefined,
+      });
       covDetails.append(covBlock);
     }
     chartGrid.append(covDetails);

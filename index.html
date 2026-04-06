@@ -42,6 +42,35 @@
           <a class="btn btn-linklike" href="examples.html">View Examples</a>
         </div>
 
+        <section class="readme-box">
+          <h2>README</h2>
+          <p><strong>1. Datasets</strong></p>
+          <p>
+            This benchmark includes four datasets: <strong>Freshretailnet</strong> (retail demand data),
+            <strong>PSML</strong> (energy consumption data), <strong>MIMIC</strong> (real-world healthcare data from a
+            medical system), and <strong>causal_chambers</strong> (data describing a physical apparatus).
+          </p>
+
+          <p><strong>2. Task Types</strong></p>
+          <p>
+            <strong>T3</strong> focuses on understanding and reasoning questions based on historical information.
+            <strong>T4</strong> focuses on forecasting and prediction questions.
+          </p>
+
+          <p><strong>3. Option Selection Guidance</strong></p>
+          <p>
+            Please avoid choosing <strong>Uncertain</strong> whenever possible. Select <strong>Uncertain</strong> only
+            when the question is genuinely too ambiguous or difficult to infer from the provided context.
+          </p>
+
+          <p><strong>4. External Knowledge Policy</strong></p>
+          <p>
+            If you encounter unfamiliar domain knowledge (for example, medication effects), you may consult reference
+            materials, including asking GPT for background knowledge. However, do not ask an LLM to directly complete
+            the annotation questions for you.
+          </p>
+        </section>
+
         <p id="entry-message" class="message"></p>
       </section>
     </main>
