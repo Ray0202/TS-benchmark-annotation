@@ -694,7 +694,9 @@ function renderHeader() {
   const left = document.createElement("div");
   left.innerHTML = `
     <strong>Annotator: ${config.annotatorName}</strong>
-    <span class="muted">Dataset: ${config.dataset} | Tier: ${(config.selectedTiers || []).join(", ")} | Saved: ${state.answers.length}/${state.selectedItems.length || 0}</span>
+    <span class="muted">Dataset: ${config.dataset} | Tier: ${(config.selectedTiers || []).join(", ")} | Start: ${
+      Math.max(1, Math.floor(Number(config.startIndex || 1)))
+    } | Requested: ${Math.max(1, Math.floor(Number(config.annotationCount || 1)))} | Saved: ${state.answers.length}/${state.selectedItems.length || 0}</span>
   `;
 
   const right = document.createElement("div");
@@ -1033,8 +1035,13 @@ async function init() {
       return;
     }
 
-    const count = Math.min(config.annotationCount || 1, state.records.length);
-    state.selectedItems = shuffle(state.records).slice(0, count);
+    const count = Math.max(1, Math.floor(Number(config.annotationCount || 1)));
+    const startIndex0 = Math.max(0, Math.floor(Number(config.startIndex || 1)) - 1);
+    state.selectedItems = state.records.slice(startIndex0, startIndex0 + count);
+    if (state.selectedItems.length === 0) {
+      contextEl.innerHTML = `<p>No items from start index ${startIndex0 + 1}. Available filtered items: ${state.records.length}.</p>`;
+      return;
+    }
     state.questionStartedAt = new Date().toISOString();
     renderHeader();
     renderCurrent();

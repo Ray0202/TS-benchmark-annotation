@@ -43,6 +43,7 @@ form.addEventListener("submit", (event) => {
   const annotatorName = String(formData.get("annotatorName") || "").trim();
   const dataset = String(formData.get("dataset") || "").trim();
   const annotationCount = Number(formData.get("annotationCount"));
+  const startIndex = Number(formData.get("startIndex"));
   const selectedTiersRaw = formData.getAll("tier").map((x) => String(x));
   const selectedTiers = selectedTiersRaw.filter((x) => x === "T3" || x === "T4");
 
@@ -62,6 +63,10 @@ form.addEventListener("submit", (event) => {
     msg.textContent = "Number of items must be a positive integer.";
     return;
   }
+  if (!Number.isFinite(startIndex) || startIndex < 1) {
+    msg.textContent = "Start index must be a positive integer (1-based).";
+    return;
+  }
   if (selectedTiers.length === 0) {
     msg.textContent = "Please select at least one tier (T3 or T4).";
     return;
@@ -75,6 +80,7 @@ form.addEventListener("submit", (event) => {
     datasetFile: selectedOption.dataset.file,
     annotationCount: finalCount,
     requestedCount: Math.floor(annotationCount),
+    startIndex: Math.floor(startIndex),
     selectedTiers,
     startedAt: new Date().toISOString(),
   };
