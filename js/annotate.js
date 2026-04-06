@@ -276,7 +276,7 @@ function normalizeSeriesLength(values, timestamps, maxPoints = MAX_PLOT_POINTS) 
   return { values: outVals, timestamps: [] };
 }
 
-function formatTimestampLabel(v, withDate = false) {
+function formatTimestampLabel(v, withDate = false, opts = {}) {
   if (v === null || v === undefined) return "";
   if (typeof v === "number" && Number.isFinite(v)) {
     if (withDate && v >= 0) {
@@ -303,7 +303,12 @@ function formatTimestampLabel(v, withDate = false) {
     const d = new Date(ms);
     const hh = String(d.getHours()).padStart(2, "0");
     const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    const ds = String(opts.dataset || "");
+    const spanMs = Number(opts.spanMs || 0);
+    if (ds === "causal_chambers") return `${hh}:${mm}:${ss}`;
     if (!withDate) return `${hh}:${mm}`;
+    if (spanMs > 0 && spanMs <= 6 * 3600 * 1000) return `${hh}:${mm}:${ss}`;
     const mon = String(d.getMonth() + 1).padStart(2, "0");
     const day = String(d.getDate()).padStart(2, "0");
     return `${mon}-${day} ${hh}:${mm}`;
@@ -413,6 +418,7 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd", op
     opts.xDomain.max > opts.xDomain.min;
   const minX = hasDomain ? opts.xDomain.min : axis.minX;
   const maxX = hasDomain ? opts.xDomain.max : axis.maxX;
+  const datasetName = String(opts.dataset || "");
   const xScale = (x) => left + ((right - left) * (x - minX)) / Math.max(maxX - minX, 1e-9);
   const yScale = (y) => bottom - ((bottom - top) * (y - low)) / (high - low);
 
@@ -471,18 +477,36 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd", op
   }
 
   if (tickSpecs.length === 0) {
-    const tickCount = 5;
-    for (let i = 0; i < tickCount; i += 1) {
-      const t = minX + ((maxX - minX) * i) / Math.max(tickCount - 1, 1);
-      let label = "";
-      if (useDateAxis) {
-        label = formatTimestampLabel(new Date(t).toISOString(), true);
-      } else if (useNumericAxis) {
-        label = formatTimestampLabel(t, true);
-      } else {
-        label = String(Math.round(t));
+    if (useDateAxis && datasetName === "causal_chambers") {
+      const spanSec = Math.max(1, (maxX - minX) / 1000);
+      let stepSec = 2;
+      if (spanSec > 120) stepSec = 5;
+      if (spanSec > 600) stepSec = 10;
+      if (spanSec > 1800) stepSec = 30;
+      if (spanSec > 7200) stepSec = 60;
+      const stepMs = stepSec * 1000;
+      const start = Math.ceil(minX / stepMs) * stepMs;
+      let i = 0;
+      for (let t = start; t <= maxX + 1; t += stepMs) {
+        const major = i % 3 === 0;
+        const label = major ? formatTimestampLabel(new Date(t).toISOString(), true, { dataset: datasetName, spanMs: maxX - minX }) : "";
+        tickSpecs.push({ t, label, isFresh: false });
+        i += 1;
       }
-      tickSpecs.push({ t, label, isFresh: false });
+    } else {
+      const tickCount = 5;
+      for (let i = 0; i < tickCount; i += 1) {
+        const t = minX + ((maxX - minX) * i) / Math.max(tickCount - 1, 1);
+        let label = "";
+        if (useDateAxis) {
+          label = formatTimestampLabel(new Date(t).toISOString(), true, { dataset: datasetName, spanMs: maxX - minX });
+        } else if (useNumericAxis) {
+          label = formatTimestampLabel(t, true, { dataset: datasetName, spanMs: maxX - minX });
+        } else {
+          label = String(Math.round(t));
+        }
+        tickSpecs.push({ t, label, isFresh: false });
+      }
     }
   }
 
@@ -591,6 +615,483 @@ function mountSeriesCanvas(container, values, timestamps, eventInfo, color = "#0
   canvas.className = "ts-chart";
   container.append(canvas);
   requestAnimationFrame(() => drawSeries(canvas, values || [], timestamps || [], eventInfo, color, opts));
+}
+
+function toNormalizedText(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[_\-]+/g, " ")
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildCovariateAliases(name) {
+  const lower = String(name || "").toLowerCase();
+  const base = [lower, lower.replace(/_/g, " "), lower.replace(/_/g, "")];
+  const extra = {
+    heart_rate: ["heart rate", "hr"],
+    resp_rate: ["resp rate", "respiratory rate", "respiration rate", "rr"],
+    temperature_c: ["temperature", "temp", "body temperature"],
+    spo2: ["oxygen saturation", "o2 saturation"],
+    sbp: ["systolic blood pressure", "systolic"],
+    dbp: ["diastolic blood pressure", "diastolic"],
+    sales_censored: ["sales", "demand"],
+    holiday_flag: ["holiday"],
+    precipitation: ["rain", "rainfall"],
+    avg_temperature: ["average temperature", "temperature"],
+    time_position_in_day: ["time position in day", "time of day", "intraday", "hour of day", "daily slot"],
+  };
+  return Array.from(new Set([...(base || []), ...((extra[lower] || []).map((x) => String(x).toLowerCase()))]));
+}
+
+function questionMentionsCovariate(questionText, covariateName) {
+  const qRaw = String(questionText || "").toLowerCase();
+  const qNorm = toNormalizedText(questionText || "");
+  const aliases = buildCovariateAliases(covariateName);
+  for (const alias of aliases) {
+    const aNorm = toNormalizedText(alias);
+    if (!aNorm) continue;
+    if (aNorm === "hr" || aNorm === "rr") {
+      const re = new RegExp(`(^|[^a-z0-9])${aNorm}([^a-z0-9]|$)`, "i");
+      if (re.test(qRaw)) return true;
+      continue;
+    }
+    if (qNorm.includes(aNorm)) return true;
+  }
+  return false;
+}
+
+function fitSeriesToLength(values, targetLen) {
+  const out = new Array(targetLen).fill(null);
+  const src = Array.isArray(values) ? values : [];
+  const n = Math.min(targetLen, src.length);
+  for (let i = 0; i < n; i += 1) {
+    out[i] = src[i];
+  }
+  return out;
+}
+
+function hasEnoughFinite(values, minCount = 2) {
+  let c = 0;
+  for (const v of values || []) {
+    if (typeof v === "number" && Number.isFinite(v)) c += 1;
+    if (c >= minCount) return true;
+  }
+  return false;
+}
+
+function prepareAlignedQuestionSeries(item, q) {
+  const hist = item.history || {};
+  const mainKey = String(hist.key || "target");
+  const mainValues = Array.isArray(hist.values) ? hist.values : [];
+  const histTsRaw = Array.isArray(hist.timestamps) ? hist.timestamps : [];
+  const covTsRaw = Array.isArray((item.history_covariates || {}).timestamps)
+    ? (item.history_covariates || {}).timestamps
+    : [];
+  const baseTimestampsRaw = histTsRaw.length > 0 ? histTsRaw : covTsRaw;
+  const displayTs = buildDisplayTimestamps(item, baseTimestampsRaw);
+  const n = Math.max(displayTs.length, mainValues.length);
+  const timestamps = displayTs.length === n ? displayTs : fitSeriesToLength(displayTs, n);
+
+  const series = [];
+  const mainAligned = fitSeriesToLength(mainValues, n);
+  if (hasEnoughFinite(mainAligned)) {
+    series.push({ name: mainKey, values: mainAligned, color: "#0f6cbd" });
+  }
+
+  const covariates = ((item.history_covariates || {}).covariates) || {};
+  const qText = String((q && q.question) || "");
+  const covNames = Object.keys(covariates || {});
+  const mentioned = covNames.filter((name) => questionMentionsCovariate(qText, name));
+  const palette = ["#b55300", "#0b8a6a", "#7a3cff", "#c53a3a", "#1570ef", "#7d6608"];
+
+  mentioned.forEach((name, idx) => {
+    const vals = fitSeriesToLength(covariates[name], n);
+    if (!hasEnoughFinite(vals)) return;
+    series.push({ name, values: vals, color: palette[idx % palette.length] });
+  });
+
+  return { series, timestamps, mentioned };
+}
+
+function formatMillisLabel(ms, mode = "mdhm") {
+  const d = new Date(ms);
+  const mon = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  if (mode === "hms") return `${hh}:${mm}:${ss}`;
+  if (mode === "hm") return `${hh}:${mm}`;
+  return `${mon}-${day} ${hh}:${mm}`;
+}
+
+function formatDurationText(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return "N/A";
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec} second${sec === 1 ? "" : "s"}`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} minute${min === 1 ? "" : "s"}`;
+  const hr = Math.round(min / 60);
+  return `${hr} hour${hr === 1 ? "" : "s"}`;
+}
+
+function computeCausalStepSec(spanSec) {
+  if (spanSec <= 90) return 1;
+  if (spanSec <= 5 * 60) return 2;
+  if (spanSec <= 15 * 60) return 5;
+  if (spanSec <= 45 * 60) return 10;
+  if (spanSec <= 2 * 3600) return 30;
+  if (spanSec <= 6 * 3600) return 60;
+  return 300;
+}
+
+function buildDatasetTicks(axis, minX, maxX, dataset, plotWidth) {
+  const ds = String(dataset || "");
+  const ticks = [];
+  let minorStepMs = 0;
+  let majorEvery = 1;
+  let granularityText = "";
+
+  if (ds === "freshretailnet" && axis.useNumericAxis) {
+    const step = 120; // 2h minor ticks
+    minorStepMs = step * 60 * 1000;
+    const start = Math.ceil(minX / step) * step;
+    const totalTicks = Math.max(1, Math.floor((maxX - start) / step) + 1);
+    const maxMajorLabels = Math.max(8, Math.floor((plotWidth || 900) / 90));
+    majorEvery = Math.max(1, Math.ceil(totalTicks / maxMajorLabels));
+    let k = 0;
+    for (let t = start; t <= maxX + 1e-6; t += step) {
+      const total = Math.round(t);
+      const day = Math.floor(total / 1440) + 1;
+      const rem = ((total % 1440) + 1440) % 1440;
+      const hh = Math.floor(rem / 60);
+      const mm = rem % 60;
+      const atDayStart = hh === 6 && mm === 0;
+      const atDayEnd = hh === 22 && mm === 0;
+      const major = atDayStart || atDayEnd || k % majorEvery === 0;
+      const label = major ? `${atDayStart ? `D${day} ` : ""}${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}` : "";
+      ticks.push({ t, label, major });
+      k += 1;
+    }
+    granularityText = `Minor tick: ${formatDurationText(minorStepMs)}`;
+    return { ticks, minorStepMs, majorEvery, granularityText };
+  }
+
+  if (ds === "PSML" && axis.useDateAxis) {
+    const stepMs = 2 * 3600 * 1000; // 2h minor ticks
+    minorStepMs = stepMs;
+    const start = Math.ceil(minX / stepMs) * stepMs;
+    const totalTicks = Math.max(1, Math.floor((maxX - start) / stepMs) + 1);
+    const maxMajorLabels = Math.max(8, Math.floor((plotWidth || 900) / 95));
+    majorEvery = Math.max(1, Math.ceil(totalTicks / maxMajorLabels));
+    let k = 0;
+    for (let t = start; t <= maxX + 1; t += stepMs) {
+      const hour = new Date(t).getHours();
+      const atMidnight = hour === 0;
+      const major = atMidnight || k % majorEvery === 0;
+      const label = major ? formatMillisLabel(t, "mdhm") : "";
+      ticks.push({ t, label, major });
+      k += 1;
+    }
+    granularityText = `Minor tick: ${formatDurationText(minorStepMs)}`;
+    return { ticks, minorStepMs, majorEvery, granularityText };
+  }
+
+  if (ds === "causal_chambers" && axis.useDateAxis) {
+    const spanSec = Math.max(1, (maxX - minX) / 1000);
+    const stepSec = computeCausalStepSec(spanSec);
+    const stepMs = stepSec * 1000;
+    minorStepMs = stepMs;
+    const start = Math.ceil(minX / stepMs) * stepMs;
+    const totalTicks = Math.max(1, Math.floor((maxX - start) / stepMs) + 1);
+    const maxMajorLabels = Math.max(8, Math.floor((plotWidth || 900) / 90));
+    majorEvery = Math.max(1, Math.ceil(totalTicks / maxMajorLabels));
+    let k = 0;
+    for (let t = start; t <= maxX + 1; t += stepMs) {
+      const major = k % majorEvery === 0;
+      const label = major ? formatMillisLabel(t, stepSec < 60 ? "hms" : "hm") : "";
+      ticks.push({ t, label, major });
+      k += 1;
+    }
+    granularityText = `Minor tick: ${formatDurationText(minorStepMs)}`;
+    return { ticks, minorStepMs, majorEvery, granularityText };
+  }
+
+  const xTickCount = Math.max(8, Math.min(24, Math.floor((plotWidth || 800) / 120)));
+  minorStepMs = Math.max(1, Math.round((maxX - minX) / Math.max(xTickCount - 1, 1)));
+  for (let i = 0; i < xTickCount; i += 1) {
+    const t = minX + ((maxX - minX) * i) / Math.max(xTickCount - 1, 1);
+    let label = "";
+    if (axis.useDateAxis) label = formatMillisLabel(t, "mdhm");
+    else if (axis.useNumericAxis) label = formatTimestampLabel(t, true);
+    else label = String(Math.round(t));
+    ticks.push({ t, label, major: true });
+  }
+  granularityText = `Minor tick: ${formatDurationText(minorStepMs)}`;
+  return { ticks, minorStepMs, majorEvery, granularityText };
+}
+
+function drawMultiAxisAlignedSeries(canvas, seriesEntries, timestamps, opts = {}) {
+  const parentWidth = canvas.parentElement ? canvas.parentElement.clientWidth : 0;
+  const requestedWidth = Number(opts.virtualWidth || 0);
+  const width = Math.max(requestedWidth || 0, canvas.clientWidth, parentWidth - 8, 560);
+  const nSeries = Math.max(1, Array.isArray(seriesEntries) ? seriesEntries.length : 1);
+  const leftAxisCount = Math.ceil(nSeries / 2);
+  const rightAxisCount = Math.floor(nSeries / 2);
+  const height = Math.max(canvas.clientHeight, 360);
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, width, height);
+
+  const n = Array.isArray(timestamps) ? timestamps.length : 0;
+  if (n < 2 || !Array.isArray(seriesEntries) || seriesEntries.length === 0) {
+    ctx.fillStyle = "#8da2b5";
+    ctx.font = "14px sans-serif";
+    ctx.fillText("Insufficient data to draw", 12, 24);
+    return;
+  }
+
+  const axis = deriveAxisInfo(new Array(n).fill(1), timestamps);
+  const xRaw = new Array(n).fill(0).map((_, i) => {
+    if (axis.useDateAxis) return toMillis(timestamps[i]);
+    if (axis.useNumericAxis) return Number(timestamps[i]);
+    return i;
+  });
+
+  const minX = Math.min(...xRaw.filter((x) => Number.isFinite(x)));
+  const maxX = Math.max(...xRaw.filter((x) => Number.isFinite(x)));
+
+  const axisGap = 38;
+  const top = 14;
+  const bottom = height - 54;
+  const plotLeft = 54 + Math.max(0, leftAxisCount - 1) * axisGap;
+  const plotRight = width - 14 - Math.max(0, rightAxisCount - 1) * axisGap;
+  const xScale = (x) => plotLeft + ((plotRight - plotLeft) * (x - minX)) / Math.max(maxX - minX, 1e-9);
+
+  // Plot frame and vertical guide lines.
+  ctx.strokeStyle = "#64748b";
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(plotLeft, top);
+  ctx.lineTo(plotLeft, bottom);
+  ctx.lineTo(plotRight, bottom);
+  ctx.lineTo(plotRight, top);
+  ctx.stroke();
+
+  const tickInfo = buildDatasetTicks(axis, minX, maxX, opts.dataset, plotRight - plotLeft);
+  const xTicks = tickInfo.ticks || [];
+  const ds = String(opts.dataset || "");
+  for (const tick of xTicks) {
+    if (!tick.major && ds !== "causal_chambers") continue;
+    const x = xScale(tick.t);
+    ctx.strokeStyle = tick.major ? "#d0dbe6" : "#edf3f9";
+    ctx.lineWidth = tick.major ? 1 : 0.8;
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, bottom);
+    ctx.stroke();
+  }
+
+  seriesEntries.forEach((s, idx) => {
+    const vals = Array.isArray(s.values) ? s.values : [];
+    const finiteVals = vals.filter((v) => typeof v === "number" && Number.isFinite(v));
+    if (finiteVals.length < 2) return;
+    const minY = Math.min(...finiteVals);
+    const maxY = Math.max(...finiteVals);
+    const yPad = Math.max((maxY - minY) * 0.08, 1e-6);
+    const low = minY - yPad;
+    const high = maxY + yPad;
+    const yScale = (y) => bottom - ((bottom - top) * (y - low)) / Math.max(high - low, 1e-9);
+
+    const side = idx % 2 === 0 ? "left" : "right";
+    const axisOrder = Math.floor(idx / 2);
+    const axisX = side === "left" ? plotLeft - axisOrder * axisGap : plotRight + axisOrder * axisGap;
+    const axisColor = s.color || "#0f6cbd";
+
+    // Per-series y-axis.
+    ctx.strokeStyle = axisColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(axisX, top);
+    ctx.lineTo(axisX, bottom);
+    ctx.stroke();
+
+    const yTicks = [low, (low + high) / 2, high];
+    ctx.fillStyle = axisColor;
+    ctx.font = "10px sans-serif";
+    yTicks.forEach((tv) => {
+      const y = yScale(tv);
+      const txt = String(Number(tv.toFixed(3)));
+      ctx.beginPath();
+      if (side === "left") {
+        ctx.moveTo(axisX, y);
+        ctx.lineTo(axisX + 4, y);
+      } else {
+        ctx.moveTo(axisX, y);
+        ctx.lineTo(axisX - 4, y);
+      }
+      ctx.stroke();
+      const w = ctx.measureText(txt).width;
+      if (side === "left") {
+        ctx.fillText(txt, axisX - w - 5, y + 3);
+      } else {
+        ctx.fillText(txt, axisX + 5, y + 3);
+      }
+    });
+
+    // Axis/series label near top.
+    const nameTxt = String(s.name || "series");
+    const nw = ctx.measureText(nameTxt).width;
+    if (side === "left") {
+      ctx.fillText(nameTxt, axisX - nw - 5, top - 2 + 12);
+    } else {
+      ctx.fillText(nameTxt, axisX + 5, top - 2 + 12);
+    }
+
+    ctx.strokeStyle = s.color || "#0f6cbd";
+    ctx.lineWidth = 1.4;
+    let started = false;
+    ctx.beginPath();
+    for (let i = 0; i < n; i += 1) {
+      const x = xRaw[i];
+      const y = vals[i];
+      if (!Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
+        started = false;
+        continue;
+      }
+      const px = xScale(x);
+      const py = yScale(y);
+      if (!started) {
+        ctx.moveTo(px, py);
+        started = true;
+      } else {
+        ctx.lineTo(px, py);
+      }
+    }
+    ctx.stroke();
+  });
+
+  // Shared x-axis ticks and labels.
+  for (const tick of xTicks) {
+    const x = xScale(tick.t);
+    ctx.strokeStyle = "#94a3b8";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, bottom);
+    ctx.lineTo(x, bottom + (tick.major ? 5 : 3));
+    ctx.stroke();
+    const label = String(tick.label || "");
+    if (!label) continue;
+    ctx.fillStyle = "#334155";
+    ctx.font = "10px sans-serif";
+    const w = ctx.measureText(label).width;
+    ctx.fillText(label, Math.max(plotLeft, Math.min(plotRight - w, x - w / 2)), bottom + 15);
+  }
+
+  return tickInfo;
+}
+
+function showT3QuestionPlot(item, q, qIndex) {
+  const prepared = prepareAlignedQuestionSeries(item, q);
+  const overlay = document.createElement("div");
+  overlay.className = "plot-modal-overlay";
+  const modal = document.createElement("div");
+  modal.className = "plot-modal";
+
+  const title = document.createElement("h3");
+  title.textContent = `Q${qIndex + 1} Aligned Series`;
+  const meta = document.createElement("p");
+  meta.className = "muted";
+  const mentionText =
+    prepared.mentioned.length > 0 ? prepared.mentioned.join(", ") : "No covariate name detected in this question";
+  meta.textContent = `Target + mentioned covariates: ${mentionText}`;
+  const granularity = document.createElement("p");
+  granularity.className = "muted";
+  granularity.textContent = "X-axis tick granularity: computing...";
+
+  const legend = document.createElement("div");
+  legend.className = "series-legend";
+  prepared.series.forEach((s, idx) => {
+    const vals = (s.values || []).filter((v) => typeof v === "number" && Number.isFinite(v));
+    const minV = vals.length ? Number(Math.min(...vals).toFixed(3)) : "N/A";
+    const maxV = vals.length ? Number(Math.max(...vals).toFixed(3)) : "N/A";
+    const side = idx % 2 === 0 ? "Left Y-axis" : "Right Y-axis";
+
+    const row = document.createElement("div");
+    row.className = "legend-row";
+    const sw = document.createElement("span");
+    sw.className = "legend-swatch";
+    sw.style.background = s.color || "#0f6cbd";
+    const txt = document.createElement("span");
+    txt.textContent = `${s.name} | ${side} | range: ${minV} to ${maxV}`;
+    row.append(sw, txt);
+    legend.append(row);
+  });
+
+  const scrollWrap = document.createElement("div");
+  scrollWrap.className = "plot-scroll-wrap";
+  const chart = document.createElement("canvas");
+  chart.className = "ts-chart question-plot";
+  const baseWidth = Math.max(760, (modal.clientWidth || 760) - 24);
+  const virtualWidth = Math.round(baseWidth * 3.2);
+  chart.style.width = `${virtualWidth}px`;
+  scrollWrap.append(chart);
+
+  const sliderWrap = document.createElement("div");
+  sliderWrap.className = "plot-slider-wrap";
+  const sliderLabel = document.createElement("span");
+  sliderLabel.className = "muted";
+  sliderLabel.textContent = "Horizontal View";
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.min = "0";
+  slider.max = "1000";
+  slider.step = "1";
+  slider.value = "0";
+  slider.className = "plot-slider";
+  sliderWrap.append(sliderLabel, slider);
+
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "btn";
+  closeBtn.textContent = "Close";
+  closeBtn.onclick = () => overlay.remove();
+
+  modal.append(title, meta, granularity, legend, scrollWrap, sliderWrap, closeBtn);
+  overlay.append(modal);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  document.body.appendChild(overlay);
+
+  const syncSliderFromScroll = () => {
+    const maxScroll = Math.max(1, scrollWrap.scrollWidth - scrollWrap.clientWidth);
+    const ratio = Math.max(0, Math.min(1, scrollWrap.scrollLeft / maxScroll));
+    slider.value = String(Math.round(ratio * 1000));
+  };
+  const syncScrollFromSlider = () => {
+    const maxScroll = Math.max(0, scrollWrap.scrollWidth - scrollWrap.clientWidth);
+    const ratio = Number(slider.value) / 1000;
+    scrollWrap.scrollLeft = Math.round(maxScroll * ratio);
+  };
+  slider.addEventListener("input", syncScrollFromSlider);
+  scrollWrap.addEventListener("scroll", syncSliderFromScroll);
+
+  requestAnimationFrame(() => {
+    const info = drawMultiAxisAlignedSeries(chart, prepared.series, prepared.timestamps, {
+      virtualWidth,
+      dataset: String(item.source_dataset || ""),
+    });
+    const majorMs = (info?.minorStepMs || 0) * Math.max(1, Number(info?.majorEvery || 1));
+    granularity.textContent = `X-axis tick granularity: minor = ${formatDurationText(
+      info?.minorStepMs || 0
+    )}, labeled major ≈ ${formatDurationText(majorMs || info?.minorStepMs || 0)}.`;
+    syncSliderFromScroll();
+  });
 }
 
 function shuffle(array) {
@@ -950,6 +1451,7 @@ function renderCurrent() {
       : null;
   mountSeriesCanvas(histBlock, histPrepared.values, histPrepared.timestamps, eventInfo, "#0f6cbd", {
     xDomain: mainDomain,
+    dataset: String(item.source_dataset || ""),
     dayStartMinute: String(item.source_dataset || "") === "freshretailnet" ? 6 * 60 : undefined,
     dayEndMinute: String(item.source_dataset || "") === "freshretailnet" ? 22 * 60 : undefined,
     psmlMidnightTicks: String(item.source_dataset || "") === "PSML",
@@ -991,6 +1493,7 @@ function renderCurrent() {
         resetDropThreshold: 300,
         showEventMarker: false,
         xDomain: mainDomain,
+        dataset: String(item.source_dataset || ""),
         dayStartMinute: String(item.source_dataset || "") === "freshretailnet" ? 6 * 60 : undefined,
     dayEndMinute: String(item.source_dataset || "") === "freshretailnet" ? 22 * 60 : undefined,
         psmlMidnightTicks: String(item.source_dataset || "") === "PSML",
@@ -1015,6 +1518,14 @@ function renderCurrent() {
     const legend = document.createElement("legend");
     legend.textContent = `${qIndex + 1}. ${q.question}`;
     block.append(legend);
+    if (String(item.tier || "") === "T3") {
+      const inspectBtn = document.createElement("button");
+      inspectBtn.type = "button";
+      inspectBtn.className = "btn btn-small";
+      inspectBtn.textContent = "View Aligned Plot";
+      inspectBtn.onclick = () => showT3QuestionPlot(item, q, qIndex);
+      block.append(inspectBtn);
+    }
     if (state.cheatMode) {
       const hint = document.createElement("div");
       hint.className = "muted";

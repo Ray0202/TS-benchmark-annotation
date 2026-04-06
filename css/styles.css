@@ -122,6 +122,11 @@ button {
   background: var(--brand-dark);
 }
 
+.btn-small {
+  padding: 6px 10px;
+  font-size: 0.85rem;
+}
+
 .message {
   min-height: 20px;
   color: #af2c31;
@@ -277,6 +282,80 @@ button {
   border-radius: 12px;
   padding: 12px;
   background: #f9fbff;
+}
+
+.question-plot {
+  height: 320px;
+}
+
+.plot-scroll-wrap {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid #dbe6f0;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.plot-scroll-wrap .question-plot {
+  display: block;
+}
+
+.plot-slider-wrap {
+  display: grid;
+  gap: 6px;
+}
+
+.plot-slider {
+  width: 100%;
+}
+
+.series-legend {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #e5edf6;
+  border-radius: 10px;
+  background: #f9fcff;
+}
+
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.92rem;
+}
+
+.legend-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  flex: 0 0 auto;
+}
+
+.plot-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 12px;
+}
+
+.plot-modal {
+  width: min(960px, 96vw);
+  max-height: 92vh;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.22);
+  display: grid;
+  gap: 8px;
 }
 
 @media (max-width: 760px) {
