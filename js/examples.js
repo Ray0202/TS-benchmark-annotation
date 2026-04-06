@@ -25,6 +25,51 @@ function toMillis(ts) {
   return Number.isFinite(t) ? t : null;
 }
 
+function getBaseDateFromItem(item) {
+  const raw = String((item && (item.sample_id || item.id)) || "");
+  const m = raw.match(/(\d{4})-(\d{2})-(\d{2})T/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mon = Number(m[2]);
+  const d = Number(m[3]);
+  if (!Number.isFinite(y) || !Number.isFinite(mon) || !Number.isFinite(d)) return null;
+  return { y, mon, d };
+}
+
+function buildDisplayTimestamps(item, timestamps) {
+  const ts = Array.isArray(timestamps) ? timestamps : [];
+  if (ts.length === 0) return ts;
+
+  if (ts.some((v) => typeof v === "string" && toMillis(v) !== null)) {
+    return ts;
+  }
+
+  const ds = String((item && item.source_dataset) || "");
+  const allNumeric = ts.every((v) => typeof v === "number" && Number.isFinite(v));
+  if (ds !== "MIMIC" || !allNumeric) {
+    return ts;
+  }
+
+  const base = getBaseDateFromItem(item);
+  if (!base) return ts;
+
+  const out = [];
+  let dayOffset = 0;
+  let prevMin = null;
+  for (const v of ts) {
+    const minute = Math.round(v);
+    if (prevMin !== null && minute < prevMin - 720) {
+      dayOffset += 1;
+    }
+    prevMin = minute;
+    const dt = new Date(Date.UTC(base.y, base.mon - 1, base.d, 0, 0, 0));
+    dt.setUTCDate(dt.getUTCDate() + dayOffset);
+    dt.setUTCMinutes(dt.getUTCMinutes() + minute);
+    out.push(dt.toISOString());
+  }
+  return out;
+}
+
 function formatTimestampLabel(v, withDate = false) {
   if (v === null || v === undefined) return "";
   if (typeof v === "number" && Number.isFinite(v)) {
@@ -182,7 +227,7 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd") {
     const idx = Math.round((i * ((values || []).length - 1)) / Math.max(tickCount - 1, 1));
     const x = xScale(idx);
     const raw = Array.isArray(timestamps) && timestamps.length > idx ? timestamps[idx] : idx;
-    const label = formatTimestampLabel(raw, useDate && (i === 0 || i === tickCount - 1));
+    const label = formatTimestampLabel(raw, useDate);
 
     ctx.strokeStyle = "#94a3b8";
     ctx.lineWidth = 1;
@@ -316,9 +361,15 @@ function renderCurrent() {
   const histBlock = document.createElement("div");
   histBlock.className = "chart-block";
   histBlock.innerHTML = `<h4>Historical Series (${(item.history || {}).key || "target"})</h4>`;
-  mountSeriesCanvas(histBlock, (item.history || {}).values || [], (item.history || {}).timestamps || [], eventInfo);
+  mountSeriesCanvas(
+    histBlock,
+    (item.history || {}).values || [],
+    buildDisplayTimestamps(item, (item.history || {}).timestamps || []),
+    eventInfo
+  );
   chartGrid.append(histBlock);
 
+  const covTimestamps = buildDisplayTimestamps(item, (item.history_covariates || {}).timestamps || []);
   const covariates = ((item.history_covariates || {}).covariates) || {};
   const covNames = Object.keys(covariates);
   if (covNames.length > 0) {
@@ -335,7 +386,7 @@ function renderCurrent() {
       mountSeriesCanvas(
         covBlock,
         covariates[covName] || [],
-        (item.history_covariates || {}).timestamps || [],
+        covTimestamps,
         eventInfo,
         "#b55300"
       );

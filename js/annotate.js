@@ -106,6 +106,51 @@ function toMillis(ts) {
   return Number.isFinite(t) ? t : null;
 }
 
+function getBaseDateFromItem(item) {
+  const raw = String((item && (item.sample_id || item.id)) || "");
+  const m = raw.match(/(\d{4})-(\d{2})-(\d{2})T/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mon = Number(m[2]);
+  const d = Number(m[3]);
+  if (!Number.isFinite(y) || !Number.isFinite(mon) || !Number.isFinite(d)) return null;
+  return { y, mon, d };
+}
+
+function buildDisplayTimestamps(item, timestamps) {
+  const ts = Array.isArray(timestamps) ? timestamps : [];
+  if (ts.length === 0) return ts;
+
+  if (ts.some((v) => typeof v === "string" && toMillis(v) !== null)) {
+    return ts;
+  }
+
+  const ds = String((item && item.source_dataset) || "");
+  const allNumeric = ts.every((v) => typeof v === "number" && Number.isFinite(v));
+  if (ds !== "MIMIC" || !allNumeric) {
+    return ts;
+  }
+
+  const base = getBaseDateFromItem(item);
+  if (!base) return ts;
+
+  const out = [];
+  let dayOffset = 0;
+  let prevMin = null;
+  for (const v of ts) {
+    const minute = Math.round(v);
+    if (prevMin !== null && minute < prevMin - 720) {
+      dayOffset += 1;
+    }
+    prevMin = minute;
+    const dt = new Date(Date.UTC(base.y, base.mon - 1, base.d, 0, 0, 0));
+    dt.setUTCDate(dt.getUTCDate() + dayOffset);
+    dt.setUTCMinutes(dt.getUTCMinutes() + minute);
+    out.push(dt.toISOString());
+  }
+  return out;
+}
+
 function formatTimestampLabel(v, withDate = false) {
   if (v === null || v === undefined) return "";
   if (typeof v === "number" && Number.isFinite(v)) {
@@ -203,7 +248,7 @@ function drawSeries(canvas, values, timestamps, eventInfo, color = "#0f6cbd") {
     const idx = Math.round((i * (values.length - 1)) / Math.max(tickCount - 1, 1));
     const x = xScale(idx);
     const raw = Array.isArray(timestamps) && timestamps.length > idx ? timestamps[idx] : idx;
-    const label = formatTimestampLabel(raw, useDate && (i === 0 || i === tickCount - 1));
+    const label = formatTimestampLabel(raw, useDate);
     ctx.strokeStyle = "#94a3b8";
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -364,10 +409,118 @@ function buildCsv(payload) {
     .join("\n");
 }
 
+function getCurrentDraftResponse() {
+  const item = state.selectedItems[state.index];
+  if (!item) return null;
+  const form = document.getElementById("question-form");
+  if (!form) return null;
+
+  const formData = new FormData(form);
+  const mcqList = Array.isArray(item.mcq) ? item.mcq : [];
+  const responses = {};
+
+  for (const q of mcqList) {
+    const qKey = q.key;
+    const answer = String(formData.get(qKey) || "").trim();
+    if (answer) responses[qKey] = answer;
+  }
+  if (Object.keys(responses).length === 0) return null;
+
+  const existing = getItemAnswer(item.id);
+  const submittedAt = new Date().toISOString();
+  const started = existing?.startedAt || state.questionStartedAt || submittedAt;
+  const timeSpentSec = Math.max(0, (Date.parse(submittedAt) - Date.parse(started)) / 1000);
+
+  return {
+    itemId: item.id,
+    tier: item.tier,
+    sourceDataset: item.source_dataset,
+    responses,
+    startedAt: started,
+    submittedAt,
+    timeSpentSec,
+    draft: true,
+  };
+}
+
+function buildPayload(includeCurrentDraft = false) {
+  const merged = new Map();
+  for (const ans of state.answers) {
+    merged.set(ans.itemId, ans);
+  }
+  if (includeCurrentDraft) {
+    const draft = getCurrentDraftResponse();
+    if (draft) merged.set(draft.itemId, draft);
+  }
+  const answers = Array.from(merged.values());
+  const summary = buildSummary(answers);
+  return {
+    annotatorName: config.annotatorName,
+    dataset: config.dataset,
+    requestedCount: config.requestedCount,
+    actualCount: state.selectedItems.length,
+    startedAt: config.startedAt,
+    exportedAt: new Date().toISOString(),
+    answers,
+    stats: summary,
+    isPartial: answers.length < state.selectedItems.length,
+  };
+}
+
+function renderHeader() {
+  headerEl.innerHTML = "";
+
+  const left = document.createElement("div");
+  left.innerHTML = `
+    <strong>Annotator: ${config.annotatorName}</strong>
+    <span class="muted">Dataset: ${config.dataset} | Tier: ${(config.selectedTiers || []).join(", ")} | Saved: ${state.answers.length}/${state.selectedItems.length || 0}</span>
+  `;
+
+  const right = document.createElement("div");
+  right.className = "row";
+
+  const downloadJsonBtn = document.createElement("button");
+  downloadJsonBtn.type = "button";
+  downloadJsonBtn.className = "btn";
+  downloadJsonBtn.textContent = "Download Progress JSON";
+  downloadJsonBtn.onclick = () => {
+    const payload = buildPayload(true);
+    const filename = `${config.annotatorName}_${config.dataset}_progress.json`;
+    triggerDownload(filename, JSON.stringify(payload, null, 2), "application/json");
+  };
+
+  const downloadCsvBtn = document.createElement("button");
+  downloadCsvBtn.type = "button";
+  downloadCsvBtn.className = "btn";
+  downloadCsvBtn.textContent = "Download Progress CSV";
+  downloadCsvBtn.onclick = () => {
+    const payload = buildPayload(true);
+    const filename = `${config.annotatorName}_${config.dataset}_progress.csv`;
+    triggerDownload(filename, buildCsv(payload), "text/csv");
+  };
+
+  const saveExitBtn = document.createElement("button");
+  saveExitBtn.type = "button";
+  saveExitBtn.className = "btn btn-primary";
+  saveExitBtn.textContent = "Save & Exit";
+  saveExitBtn.onclick = () => {
+    const payload = buildPayload(true);
+    const filename = `${config.annotatorName}_${config.dataset}_progress.json`;
+    triggerDownload(filename, JSON.stringify(payload, null, 2), "application/json");
+    sessionStorage.removeItem("annotationConfig");
+    window.location.href = "index.html";
+  };
+
+  right.append(downloadJsonBtn, downloadCsvBtn, saveExitBtn);
+  headerEl.append(left, right);
+}
+
 function renderFinish() {
-  const summary = buildSummary(state.answers);
+  const payload = buildPayload(true);
+  const summary = payload.stats || {};
 
   contextEl.innerHTML = "";
+  renderHeader();
   progressEl.textContent = `Completed ${state.answers.length} / ${state.selectedItems.length}`;
 
   const done = document.createElement("div");
@@ -379,16 +532,7 @@ function renderFinish() {
   done.appendChild(stat);
   contextEl.appendChild(done);
 
-  const payload = {
-    annotatorName: config.annotatorName,
-    dataset: config.dataset,
-    requestedCount: config.requestedCount,
-    actualCount: state.selectedItems.length,
-    startedAt: config.startedAt,
-    finishedAt: new Date().toISOString(),
-    answers: state.answers,
-    stats: summary,
-  };
+  payload.finishedAt = new Date().toISOString();
 
   answerEl.innerHTML = "";
 
@@ -429,6 +573,7 @@ function renderCurrent() {
   const existing = getItemAnswer(item.id);
   const existingResponses = (existing && existing.responses) || {};
 
+  renderHeader();
   progressEl.textContent = `Progress ${state.index + 1} / ${state.selectedItems.length}`;
   contextEl.innerHTML = "";
   answerEl.innerHTML = "";
@@ -467,10 +612,11 @@ function renderCurrent() {
   histBlock.className = "chart-block";
   histBlock.innerHTML = `<h4>Historical Series (${(item.history || {}).key || "target"})</h4>`;
   const histValues = ((item.history || {}).values) || [];
-  const histTimestamps = ((item.history || {}).timestamps) || [];
+  const histTimestamps = buildDisplayTimestamps(item, ((item.history || {}).timestamps) || []);
   mountSeriesCanvas(histBlock, histValues, histTimestamps, eventInfo);
   chartGrid.append(histBlock);
 
+  const covTimestamps = buildDisplayTimestamps(item, ((item.history_covariates || {}).timestamps) || []);
   const covariates = (((item.history_covariates || {}).covariates) || {});
   const covNames = Object.keys(covariates);
   if (covNames.length > 0) {
@@ -487,7 +633,7 @@ function renderCurrent() {
       mountSeriesCanvas(
         covBlock,
         covariates[covName] || [],
-        ((item.history_covariates || {}).timestamps) || [],
+        covTimestamps,
         eventInfo,
         "#b55300"
       );
@@ -622,11 +768,6 @@ async function init() {
     return;
   }
 
-  headerEl.innerHTML = `
-    <strong>Annotator: ${config.annotatorName}</strong>
-    <span class="muted">Dataset: ${config.dataset} | Tier: ${(config.selectedTiers || []).join(", ")}</span>
-  `;
-
   try {
     const res = await fetch(config.datasetFile, { cache: "no-store" });
     if (!res.ok) {
@@ -654,6 +795,7 @@ async function init() {
     const count = Math.min(config.annotationCount || 1, state.records.length);
     state.selectedItems = shuffle(state.records).slice(0, count);
     state.questionStartedAt = new Date().toISOString();
+    renderHeader();
     renderCurrent();
   } catch (err) {
     contextEl.innerHTML = `<p>Load error: ${escapeHtml(err?.message || String(err))}</p>`;
