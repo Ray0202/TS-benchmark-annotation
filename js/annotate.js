@@ -16,8 +16,10 @@ const state = {
   index: 0,
   answers: [],
   questionStartedAt: null,
+  cheatMode: false,
 };
 const MAX_PLOT_POINTS = 180;
+const CHEAT_PASSWORD = "0302";
 
 function toFinite(v) {
   return Number.isFinite(v) ? v : null;
@@ -718,7 +720,9 @@ function renderHeader() {
     <strong>Annotator: ${config.annotatorName}</strong>
     <span class="muted">Dataset: ${config.dataset} | Tier: ${(config.selectedTiers || []).join(", ")} | Start: ${
       Math.max(1, Math.floor(Number(config.startIndex || 1)))
-    } | Requested: ${Math.max(1, Math.floor(Number(config.annotationCount || 1)))} | Saved: ${state.answers.length}/${state.selectedItems.length || 0}</span>
+    } | Requested: ${Math.max(1, Math.floor(Number(config.annotationCount || 1)))} | Saved: ${state.answers.length}/${state.selectedItems.length || 0} | Cheat: ${
+      state.cheatMode ? "ON" : "OFF"
+    }</span>
   `;
 
   const right = document.createElement("div");
@@ -756,7 +760,37 @@ function renderHeader() {
     window.location.href = "index.html";
   };
 
-  right.append(downloadJsonBtn, downloadCsvBtn, saveExitBtn);
+  const enterCheatBtn = document.createElement("button");
+  enterCheatBtn.type = "button";
+  enterCheatBtn.className = "btn";
+  enterCheatBtn.textContent = "Enter Cheat Mode";
+  enterCheatBtn.onclick = () => {
+    const pwd = window.prompt("Enter cheat password:");
+    if (pwd === null) return;
+    if (String(pwd).trim() !== CHEAT_PASSWORD) {
+      window.alert("Invalid password.");
+      return;
+    }
+    state.cheatMode = true;
+    renderHeader();
+    if (state.selectedItems.length > 0 && state.index < state.selectedItems.length) {
+      renderCurrent();
+    }
+  };
+
+  const exitCheatBtn = document.createElement("button");
+  exitCheatBtn.type = "button";
+  exitCheatBtn.className = "btn";
+  exitCheatBtn.textContent = "Exit Cheat Mode";
+  exitCheatBtn.onclick = () => {
+    state.cheatMode = false;
+    renderHeader();
+    if (state.selectedItems.length > 0 && state.index < state.selectedItems.length) {
+      renderCurrent();
+    }
+  };
+
+  right.append(downloadJsonBtn, downloadCsvBtn, enterCheatBtn, exitCheatBtn, saveExitBtn);
   headerEl.append(left, right);
 }
 
@@ -915,6 +949,7 @@ function renderCurrent() {
   form.className = "question-panel";
 
   const mcqList = Array.isArray(item.mcq) ? item.mcq : [];
+  const referenceAnswers = item.reference_answers && typeof item.reference_answers === "object" ? item.reference_answers : {};
   for (const [qIndex, q] of mcqList.entries()) {
     const block = document.createElement("fieldset");
     block.className = "mcq-block";
@@ -923,6 +958,12 @@ function renderCurrent() {
     const legend = document.createElement("legend");
     legend.textContent = `${qIndex + 1}. ${q.question}`;
     block.append(legend);
+    if (state.cheatMode) {
+      const hint = document.createElement("div");
+      hint.className = "muted";
+      hint.textContent = `Answer: ${referenceAnswers[qKey] || "N/A"}`;
+      block.append(hint);
+    }
 
     const hasOptions = Array.isArray(q.options) && q.options.length > 1;
     if (hasOptions) {
