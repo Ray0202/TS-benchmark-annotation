@@ -1009,6 +1009,9 @@ function showT3QuestionPlot(item, q, qIndex) {
   const mentionText =
     prepared.mentioned.length > 0 ? prepared.mentioned.join(", ") : "No covariate name detected in this question";
   meta.textContent = `Target + mentioned covariates: ${mentionText}`;
+  const questionLine = document.createElement("p");
+  questionLine.className = "muted";
+  questionLine.textContent = `Question: ${String((q && q.question) || "").trim() || "N/A"}`;
   const granularity = document.createElement("p");
   granularity.className = "muted";
   granularity.textContent = "X-axis tick granularity: computing...";
@@ -1061,7 +1064,7 @@ function showT3QuestionPlot(item, q, qIndex) {
   closeBtn.textContent = "Close";
   closeBtn.onclick = () => overlay.remove();
 
-  modal.append(title, meta, granularity, legend, scrollWrap, sliderWrap, closeBtn);
+  modal.append(title, questionLine, meta, granularity, legend, scrollWrap, sliderWrap, closeBtn);
   overlay.append(modal);
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) overlay.remove();
