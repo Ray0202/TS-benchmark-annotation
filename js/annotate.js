@@ -641,6 +641,11 @@ function buildCovariateAliases(name) {
     precipitation: ["rain", "rainfall"],
     avg_temperature: ["average temperature", "temperature"],
     time_position_in_day: ["time position in day", "time of day", "intraday", "hour of day", "daily slot"],
+    temperature: ["temp", "heat", "hot", "cooling", "heatwave"],
+    ghi: ["irradiance", "solar irradiance", "solar", "sunlight"],
+    windspeed: ["wind", "wind speed", "low wind", "high wind"],
+    relativehumidity: ["humidity", "humid", "relative humidity"],
+    hour_of_day: ["hour", "hour of day", "time of day", "daypart", "morning", "noon", "afternoon", "evening", "night"],
   };
   return Array.from(new Set([...(base || []), ...((extra[lower] || []).map((x) => String(x).toLowerCase()))]));
 }
@@ -660,6 +665,110 @@ function questionMentionsCovariate(questionText, covariateName) {
     if (qNorm.includes(aNorm)) return true;
   }
   return false;
+}
+
+function normalizeCovKey(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function isHiddenCovariate(name) {
+  const key = normalizeCovKey(name);
+  return key === "hourofday" || key === "timepositioninday";
+}
+
+function selectCovByNormalizedName(covNames, wanted) {
+  const wantedSet = new Set(wanted.map((x) => normalizeCovKey(x)));
+  return covNames.filter((n) => wantedSet.has(normalizeCovKey(n)) && !isHiddenCovariate(n));
+}
+
+function inferPsmlCovariatesFromQuestion(questionText, covNames) {
+  const q = String(questionText || "").toLowerCase();
+  const chosen = new Set();
+
+  const pick = (keys) => {
+    selectCovByNormalizedName(covNames, keys).forEach((k) => chosen.add(k));
+  };
+
+  if (/(irradiance|ghi|solar|sunlight)/i.test(q)) pick(["GHI"]);
+  if (/(wind|low-wind|high-wind|gust|breeze)/i.test(q)) pick(["WindSpeed"]);
+  if (/(humidity|humid)/i.test(q)) pick(["RelativeHumidity"]);
+  if (/(temperature|temp|heatwave|hot|cold|cooling)/i.test(q)) pick(["Temperature"]);
+  if (/(morning|noon|afternoon|late-afternoon|evening|night|daypart|daily peak|peak shifted|base load|00.?04|secondary.*peak|concentrated|narrower)/i.test(q)) {
+    pick(["hour_of_day"]);
+  }
+
+  // "driver sensitivity" in PSML usually references weather drivers; include all common drivers.
+  if (/driver sensitivity/i.test(q)) {
+    pick(["Temperature", "GHI", "WindSpeed", "RelativeHumidity", "hour_of_day"]);
+  }
+
+  return Array.from(chosen);
+}
+
+function inferFreshretailnetCovariatesFromQuestion(questionText, covNames) {
+  const q = String(questionText || "").toLowerCase();
+  const chosen = new Set();
+  const pick = (keys) => {
+    selectCovByNormalizedName(covNames, keys).forEach((k) => chosen.add(k));
+  };
+
+  if (/(discount|promo|promotion|price|markdown|high-discount|low\/no discount)/i.test(q)) {
+    pick(["discount"]);
+  }
+  if (/(holiday|festival|vacation)/i.test(q)) {
+    pick(["holiday_flag"]);
+  }
+  if (/(rain|rainfall|precipitation|storm|weather)/i.test(q)) {
+    pick(["precipitation"]);
+  }
+  if (/(temperature|temp|hot|cold|heatwave)/i.test(q)) {
+    pick(["avg_temperature"]);
+  }
+  if (/(morning|noon|afternoon|evening|night|daily|intraday|daypart|peak shifted|base load|secondary peak)/i.test(q)) {
+    pick(["time_position_in_day"]);
+  }
+  return Array.from(chosen);
+}
+
+function inferMimicCovariatesFromQuestion(questionText, covNames) {
+  const q = String(questionText || "").toLowerCase();
+  const chosen = new Set();
+  const pick = (keys) => {
+    selectCovByNormalizedName(covNames, keys).forEach((k) => chosen.add(k));
+  };
+
+  if (/(heart ?rate|\\bhr\\b|pulse)/i.test(q)) pick(["heart_rate"]);
+  if (/(resp(iration)? ?rate|\\brr\\b|breath)/i.test(q)) pick(["resp_rate"]);
+  if (/(temperature|temp|fever)/i.test(q)) pick(["temperature_c"]);
+  if (/(spo2|oxygen saturation|o2)/i.test(q)) pick(["spo2"]);
+  if (/(systolic|\\bsbp\\b|blood pressure)/i.test(q)) pick(["sbp"]);
+  if (/(diastolic|\\bdbp\\b|blood pressure)/i.test(q)) pick(["dbp"]);
+  if (/(morning|noon|afternoon|evening|night|time of day|intraday|daypart)/i.test(q)) {
+    pick(["time_position_in_day"]);
+  }
+  return Array.from(chosen);
+}
+
+function inferCausalCovariatesFromQuestion(questionText, covNames) {
+  const q = String(questionText || "").toLowerCase();
+  const chosen = new Set();
+  const pick = (keys) => {
+    selectCovByNormalizedName(covNames, keys).forEach((k) => chosen.add(k));
+  };
+
+  if (/(high load|low load|load_in|\\bload\\b)/i.test(q)) pick(["load_in"]);
+  if (/(load_out|outflow load)/i.test(q)) pick(["load_out"]);
+  if (/(open-?hatch|hatch|hatch_state)/i.test(q)) pick(["hatch_state"]);
+  if (/(upwind|pressure_upwind)/i.test(q)) pick(["pressure_upwind"]);
+  if (/(ambient|pressure_ambient)/i.test(q)) pick(["pressure_ambient"]);
+  if (/(speed_in|inflow speed)/i.test(q)) pick(["speed_in"]);
+  if (/(speed_out|outflow speed)/i.test(q)) pick(["speed_out"]);
+  if (/(current_in|input current)/i.test(q)) pick(["current_in"]);
+  if (/(current_out|output current)/i.test(q)) pick(["current_out"]);
+  if (/(pressure_downwind|downwind pressure)/i.test(q)) pick(["pressure_downwind"]);
+  return Array.from(chosen);
 }
 
 function fitSeriesToLength(values, targetLen) {
@@ -702,8 +811,20 @@ function prepareAlignedQuestionSeries(item, q) {
 
   const covariates = ((item.history_covariates || {}).covariates) || {};
   const qText = String((q && q.question) || "");
-  const covNames = Object.keys(covariates || {});
-  const mentioned = covNames.filter((name) => questionMentionsCovariate(qText, name));
+  const covNames = Object.keys(covariates || {}).filter((name) => !isHiddenCovariate(name));
+  const mentionedExplicit = covNames.filter((name) => questionMentionsCovariate(qText, name));
+  const ds = String(item.source_dataset || "");
+  let mentionedHeuristic = [];
+  if (ds === "PSML") {
+    mentionedHeuristic = inferPsmlCovariatesFromQuestion(qText, covNames);
+  } else if (ds === "freshretailnet") {
+    mentionedHeuristic = inferFreshretailnetCovariatesFromQuestion(qText, covNames);
+  } else if (ds === "MIMIC") {
+    mentionedHeuristic = inferMimicCovariatesFromQuestion(qText, covNames);
+  } else if (ds === "causal_chambers") {
+    mentionedHeuristic = inferCausalCovariatesFromQuestion(qText, covNames);
+  }
+  const mentioned = Array.from(new Set([...mentionedExplicit, ...mentionedHeuristic]));
   const palette = ["#b55300", "#0b8a6a", "#7a3cff", "#c53a3a", "#1570ef", "#7d6608"];
 
   mentioned.forEach((name, idx) => {
