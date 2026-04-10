@@ -618,7 +618,20 @@ function mountSeriesCanvas(container, values, timestamps, eventInfo, color = "#0
 }
 
 function toNormalizedText(s) {
+  const subscriptToDigit = {
+    "₀": "0",
+    "₁": "1",
+    "₂": "2",
+    "₃": "3",
+    "₄": "4",
+    "₅": "5",
+    "₆": "6",
+    "₇": "7",
+    "₈": "8",
+    "₉": "9",
+  };
   return String(s || "")
+    .replace(/[₀₁₂₃₄₅₆₇₈₉]/g, (ch) => subscriptToDigit[ch] || ch)
     .toLowerCase()
     .replace(/[_\-]+/g, " ")
     .replace(/[^a-z0-9\s]+/g, " ")
@@ -633,7 +646,7 @@ function buildCovariateAliases(name) {
     heart_rate: ["heart rate", "hr"],
     resp_rate: ["resp rate", "respiratory rate", "respiration rate", "rr"],
     temperature_c: ["temperature", "temp", "body temperature"],
-    spo2: ["oxygen saturation", "o2 saturation"],
+    spo2: ["spo2", "spo₂", "oxygen saturation", "o2 saturation", "o₂ saturation"],
     sbp: ["systolic blood pressure", "systolic"],
     dbp: ["diastolic blood pressure", "diastolic"],
     sales_censored: ["sales", "demand"],
@@ -734,6 +747,7 @@ function inferFreshretailnetCovariatesFromQuestion(questionText, covNames) {
 
 function inferMimicCovariatesFromQuestion(questionText, covNames) {
   const q = String(questionText || "").toLowerCase();
+  const qNorm = toNormalizedText(questionText || "");
   const chosen = new Set();
   const pick = (keys) => {
     selectCovByNormalizedName(covNames, keys).forEach((k) => chosen.add(k));
@@ -742,7 +756,7 @@ function inferMimicCovariatesFromQuestion(questionText, covNames) {
   if (/(heart ?rate|\\bhr\\b|pulse)/i.test(q)) pick(["heart_rate"]);
   if (/(resp(iration)? ?rate|\\brr\\b|breath)/i.test(q)) pick(["resp_rate"]);
   if (/(temperature|temp|fever)/i.test(q)) pick(["temperature_c"]);
-  if (/(spo2|oxygen saturation|o2)/i.test(q)) pick(["spo2"]);
+  if (/(spo2|oxygen saturation|o2)/i.test(qNorm)) pick(["spo2"]);
   if (/(systolic|\\bsbp\\b|blood pressure)/i.test(q)) pick(["sbp"]);
   if (/(diastolic|\\bdbp\\b|blood pressure)/i.test(q)) pick(["dbp"]);
   if (/(morning|noon|afternoon|evening|night|time of day|intraday|daypart)/i.test(q)) {
